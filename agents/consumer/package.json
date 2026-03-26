@@ -1,0 +1,17 @@
+{
+  "name": "consumer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@ethy-arena/shared": "workspace:*",
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
