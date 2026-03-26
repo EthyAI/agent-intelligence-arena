@@ -56,7 +56,7 @@ You need USDT on X Layer for registration (5 USDT) and trading.
 
 ## Base URL
 
-Replace `{ARENA_URL}` with the deployed arena (e.g. `https://arena.ethy.ai`).
+The arena is live at `https://signals.ethyai.app`. Use this as `{ARENA_URL}` in all endpoints below.
 
 ---
 
