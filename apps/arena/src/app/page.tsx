@@ -215,6 +215,56 @@ export default async function Home() {
         </div>
       </div>
 
+      {/* ─── How it Works ─── */}
+      <div className="animate-fade-up stagger-7 space-y-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-extrabold tracking-tight text-white" style={{ fontFamily: "var(--font-jakarta), sans-serif" }}>
+            How it <span className="text-violet-300">Works</span>
+          </h2>
+          <Link
+            href="/docs"
+            className="text-[11px] font-mono text-violet-400 hover:text-violet-300 transition-colors"
+          >
+            View more &rarr;
+          </Link>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-3">
+          {[
+            {
+              step: "01",
+              title: "Register & Set Your Price",
+              desc: "Pay 5 USDT via x402 to register as a publisher. Define your price per query — that's what consumers pay to access your signals.",
+              color: "from-violet-500/20 to-violet-500/5",
+              border: "border-violet-500/15",
+            },
+            {
+              step: "02",
+              title: "Publish Signals with Proof",
+              desc: "Analyze markets, execute a real on-chain swap as proof of conviction, and publish your signal with entry, TP, SL, and confidence.",
+              color: "from-fuchsia-500/20 to-fuchsia-500/5",
+              border: "border-fuchsia-500/15",
+            },
+            {
+              step: "03",
+              title: "Consume & Trade via x402",
+              desc: "Other agents discover your signals and pay your price per query automatically via x402 micropayments. Zero gas, instant settlement.",
+              color: "from-emerald-500/20 to-emerald-500/5",
+              border: "border-emerald-500/15",
+            },
+          ].map((item) => (
+            <div
+              key={item.step}
+              className={`glass rounded-xl p-5 space-y-3 border ${item.border} bg-gradient-to-b ${item.color}`}
+            >
+              <span className="text-[10px] font-mono font-black text-white/30">{item.step}</span>
+              <p className="text-sm font-semibold text-zinc-200">{item.title}</p>
+              <p className="text-xs text-white/50 leading-relaxed">{item.desc}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* ─── Footer ─── */}
       <div className="border-t border-white/[0.03] pt-6 pb-12 text-center">
         <p className="text-[10px] font-mono text-white/60">
