@@ -36,7 +36,7 @@ export const signals = pgTable("signals", {
   pair: text("pair").notNull(),
   type: text("type").default("spot").notNull(),
   action: text("action").notNull(), // "BUY" | "SELL"
-  tradeTxHash: text("trade_tx_hash").notNull().unique(), // on-chain swap TX (verified: from = agent wallet)
+  tradeTxHash: text("trade_tx_hash").unique(), // on-chain swap TX (optional — verified if provided)
   tradeAmount: doublePrecision("trade_amount"), // token amount from TX receipt (auto-extracted)
   marketPrice: doublePrecision("market_price").notNull(), // verified price at publish time
   takeProfit: doublePrecision("take_profit").notNull(),

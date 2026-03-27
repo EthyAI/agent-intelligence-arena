@@ -70,7 +70,6 @@ export async function POST(req: NextRequest) {
     !tokenAddress ||
     !pair ||
     !action ||
-    !tradeTxHash ||
     !takeProfit ||
     !stopLoss ||
     !confidence
@@ -78,7 +77,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Missing required fields: token, tokenAddress, pair, action, tradeTxHash, takeProfit, stopLoss, confidence",
+          "Missing required fields: token, tokenAddress, pair, action, takeProfit, stopLoss, confidence",
       },
       { status: 400 },
     )
@@ -91,25 +90,30 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Check tradeTxHash hasn't been used before
-  const [existingTx] = await db
-    .select({ id: signals.id })
-    .from(signals)
-    .where(eq(signals.tradeTxHash, tradeTxHash))
-  if (existingTx) {
-    return NextResponse.json(
-      { error: "This trade TX has already been used for a signal" },
-      { status: 400 },
-    )
-  }
+  // If tradeTxHash provided, verify it on-chain
+  let tradeAmount: number | null = null
+  if (tradeTxHash) {
+    // Check tradeTxHash hasn't been used before
+    const [existingTx] = await db
+      .select({ id: signals.id })
+      .from(signals)
+      .where(eq(signals.tradeTxHash, tradeTxHash))
+    if (existingTx) {
+      return NextResponse.json(
+        { error: "This trade TX has already been used for a signal" },
+        { status: 400 },
+      )
+    }
 
-  // Verify trade TX on-chain: exists, from agent wallet, recent, correct token
-  const txResult = await verifyTradeTx(tradeTxHash, agent.id, tokenAddress)
-  if (!txResult.valid) {
-    return NextResponse.json(
-      { error: `Trade TX verification failed: ${txResult.reason}` },
-      { status: 400 },
-    )
+    // Verify trade TX on-chain: exists, from agent wallet, recent, correct token
+    const txResult = await verifyTradeTx(tradeTxHash, agent.id, tokenAddress)
+    if (!txResult.valid) {
+      return NextResponse.json(
+        { error: `Trade TX verification failed: ${txResult.reason}` },
+        { status: 400 },
+      )
+    }
+    tradeAmount = txResult.tokenAmount
   }
 
   // Validate token exists on X Layer by fetching current market price
@@ -134,8 +138,8 @@ export async function POST(req: NextRequest) {
     pair,
     type: "spot",
     action,
-    tradeTxHash,
-    tradeAmount: txResult.valid ? txResult.tokenAmount : null,
+    tradeTxHash: tradeTxHash || null,
+    tradeAmount,
     marketPrice,
     takeProfit,
     stopLoss,
@@ -163,9 +167,9 @@ export async function POST(req: NextRequest) {
       confidence,
       marketPrice,
     }),
-    txHash: tradeTxHash,
+    txHash: tradeTxHash || null,
     createdAt: new Date().toISOString(),
   })
 
-  return NextResponse.json({ signalId, tradeTxHash, marketPrice })
+  return NextResponse.json({ signalId, tradeTxHash: tradeTxHash || null, marketPrice })
 }

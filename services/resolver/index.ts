@@ -57,7 +57,7 @@ const signals = pgTable("signals", {
   pair: text("pair").notNull(),
   type: text("type").default("spot").notNull(),
   action: text("action").notNull(),
-  tradeTxHash: text("trade_tx_hash").notNull().unique(),
+  tradeTxHash: text("trade_tx_hash").unique(),
   tradeAmount: doublePrecision("trade_amount"),
   marketPrice: doublePrecision("market_price").notNull(),
   takeProfit: doublePrecision("take_profit").notNull(),

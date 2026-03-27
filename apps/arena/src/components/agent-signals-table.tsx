@@ -17,7 +17,7 @@ type Signal = {
   currentPrice: number | null
   indicators: string | null
   reasoning: string | null
-  tradeTxHash: string
+  tradeTxHash: string | null
   timestamp: string
 }
 

@@ -32,7 +32,7 @@ export type Signal = {
   pair: string
   type: "spot"
   action: SignalAction
-  tradeTxHash: string // on-chain swap TX (verified)
+  tradeTxHash: string | null // on-chain swap TX (verified if provided)
   tradeAmount: number | null // token amount from TX receipt
   marketPrice: number // verified price at publish time
   takeProfit: number
