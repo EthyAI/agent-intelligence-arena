@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import Link from "next/link"
 import { AgentDrawer } from "@/components/agent-drawer"
+import { relativeTime, safeParseJSON, statusStyle, statusLabel } from "@/lib/format"
 
 type CensoredSignal = {
   id: string
@@ -54,7 +55,7 @@ export default function SignalsPage() {
         setEvents(json.events)
         setAgents(json.agents)
         setLoading(false)
-      } catch { /* ignore */ }
+      } catch { /* retry on next poll */ }
     }
     poll()
     const id = setInterval(poll, 5000)
@@ -62,14 +63,11 @@ export default function SignalsPage() {
   }, [])
 
   const agentName = (id: string) => agents[id]?.name ?? `${id.slice(0, 6)}...${id.slice(-4)}`
-  const agentScore = (id: string) => agents[id]?.score ?? 0
 
-  // Sorted agent IDs by score (for rank in drawer)
   const sortedAgentIds = Object.values(agents)
     .sort((a, b) => b.score - a.score)
     .map((a) => a.id)
 
-  // Merge signals + events into unified feed sorted by time
   const feed: FeedItem[] = [
     ...signals.map((s) => ({ kind: "signal" as const, data: s, ts: new Date(s.timestamp).getTime() })),
     ...events.map((e) => ({ kind: "event" as const, data: e, ts: new Date(e.createdAt).getTime() })),
@@ -77,35 +75,6 @@ export default function SignalsPage() {
 
   const totalPages = Math.ceil(feed.length / PAGE_SIZE)
   const paginated = feed.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
-
-  const timeAgo = (iso: string) => {
-    const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-    if (s < 0) return "just now"
-    if (s < 60) return `${s}s ago`
-    if (s < 3600) return `${Math.floor(s / 60)}m ago`
-    if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-    return `${Math.floor(s / 86400)}d ago`
-  }
-
-  const statusStyle = (status: string) => {
-    switch (status) {
-      case "active": return "text-amber-400 bg-amber-400/10"
-      case "tp_hit": return "text-green-400 bg-green-400/10"
-      case "sl_hit": return "text-red-400 bg-red-400/10"
-      case "expired": return "text-zinc-300 bg-zinc-400/10"
-      default: return "text-zinc-400 bg-zinc-500/10"
-    }
-  }
-
-  const statusLabel = (status: string) => {
-    switch (status) {
-      case "active": return "LIVE"
-      case "tp_hit": return "TP HIT"
-      case "sl_hit": return "SL HIT"
-      case "expired": return "EXPIRED"
-      default: return status.toUpperCase()
-    }
-  }
 
   const agentRank = (id: string) => {
     const idx = sortedAgentIds.indexOf(id)
@@ -125,7 +94,6 @@ export default function SignalsPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-6 pt-12 pb-8 space-y-8">
-      {/* Header */}
       <div className="text-center max-w-2xl mx-auto animate-fade-up stagger-1">
         <div className="inline-flex items-center gap-2 mb-4">
           <div className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse-dot-green" />
@@ -142,7 +110,6 @@ export default function SignalsPage() {
         </p>
       </div>
 
-      {/* Feed */}
       <div className="animate-fade-up stagger-2">
         {loading ? (
           <div className="glass rounded-xl p-12 text-center">
@@ -169,7 +136,6 @@ export default function SignalsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {/* Waiting for next signal row */}
                     {page === 0 && (
                       <tr className="border-b border-white/[0.02] bg-violet-500/[0.02]">
                         <td colSpan={5} className="px-5 py-3">
@@ -188,9 +154,9 @@ export default function SignalsPage() {
                     )}
                     {paginated.map((item) => {
                       if (item.kind === "signal") {
-                        const s = item.data
+                        const signal = item.data
                         return (
-                          <tr key={`sig-${s.id}`} className="border-b border-white/[0.02] group row-hover transition-colors">
+                          <tr key={`sig-${signal.id}`} className="border-b border-white/[0.02] group row-hover transition-colors">
                             <td className="px-5 py-3.5">
                               <span className="inline-flex items-center gap-1.5 text-xs font-mono">
                                 <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />
@@ -198,14 +164,14 @@ export default function SignalsPage() {
                               </span>
                             </td>
                             <td className="px-4 py-3.5">
-                              <AgentLink id={s.agentId} />
+                              <AgentLink id={signal.agentId} />
                             </td>
                             <td className="px-4 py-3.5">
                               <div className="flex items-center gap-2">
-                                {s.status === "active" ? (
+                                {signal.status === "active" ? (
                                   <>
-                                    <span className="text-xs font-mono text-zinc-300">{s.pair}</span>
-                                    {s.tradeTxHash && (
+                                    <span className="text-xs font-mono text-zinc-300">{signal.pair}</span>
+                                    {signal.tradeTxHash && (
                                       <span title="On-chain verified trade" className="text-emerald-400/80">
                                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                                           <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -222,14 +188,14 @@ export default function SignalsPage() {
                                 ) : (
                                   <>
                                     <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                                      s.action === "BUY" ? "text-green-400 bg-green-400/10" : "text-red-400 bg-red-400/10"
+                                      signal.action === "BUY" ? "text-green-400 bg-green-400/10" : "text-red-400 bg-red-400/10"
                                     }`}>
-                                      {s.action}
+                                      {signal.action}
                                     </span>
-                                    <span className="text-xs font-mono text-zinc-300">{s.pair}</span>
-                                    {s.tradeTxHash && (
+                                    <span className="text-xs font-mono text-zinc-300">{signal.pair}</span>
+                                    {signal.tradeTxHash && (
                                       <a
-                                        href={`https://www.okx.com/web3/explorer/xlayer/tx/${s.tradeTxHash}`}
+                                        href={`https://www.okx.com/web3/explorer/xlayer/tx/${signal.tradeTxHash}`}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         title="View verified trade on X Layer"
@@ -240,9 +206,9 @@ export default function SignalsPage() {
                                         </svg>
                                       </a>
                                     )}
-                                    {s.pnl !== null && (
-                                      <span className={`text-[10px] font-mono ${s.pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                                        {s.pnl >= 0 ? "+" : ""}{s.pnl.toFixed(2)}%
+                                    {signal.pnl !== null && (
+                                      <span className={`text-[10px] font-mono ${signal.pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                                        {signal.pnl >= 0 ? "+" : ""}{signal.pnl.toFixed(2)}%
                                       </span>
                                     )}
                                   </>
@@ -251,31 +217,27 @@ export default function SignalsPage() {
                             </td>
                             <td className="px-4 py-3.5 text-right">
                               <div className="flex items-center justify-end gap-1.5">
-                                <span className={`text-[10px] font-mono font-medium px-2 py-0.5 rounded-md ${statusStyle(s.status)}`}>
-                                  {statusLabel(s.status)}
+                                <span className={`text-[10px] font-mono font-medium px-2 py-0.5 rounded-md ${statusStyle(signal.status)}`}>
+                                  {statusLabel(signal.status)}
                                 </span>
                               </div>
                             </td>
                             <td className="px-4 py-3.5 text-right">
-                              <span className="text-[10px] font-mono text-zinc-400">{timeAgo(s.timestamp)}</span>
+                              <span className="text-[10px] font-mono text-zinc-400">{relativeTime(signal.timestamp)}</span>
                             </td>
                           </tr>
                         )
                       }
 
-                      // Event: payment or registration
-                      const e = item.data
-                      const isRegistration = e.type === "agent_registered"
+                      const event = item.data
+                      const isRegistration = event.type === "agent_registered"
 
                       if (isRegistration) {
-                        let price = 0
-                        try {
-                          const parsed = JSON.parse(e.data || "{}")
-                          price = parsed.pricePerQuery || 0
-                        } catch { /* ignore */ }
+                        const parsed = safeParseJSON(event.data)
+                        const price = Number(parsed.pricePerQuery || 0)
 
                         return (
-                          <tr key={`evt-${e.id}`} className="border-b border-white/[0.02] group row-hover transition-colors bg-emerald-500/[0.02]">
+                          <tr key={`evt-${event.id}`} className="border-b border-white/[0.02] group row-hover transition-colors bg-emerald-500/[0.02]">
                             <td className="px-5 py-3.5">
                               <span className="inline-flex items-center gap-1.5 text-xs font-mono">
                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
@@ -283,7 +245,7 @@ export default function SignalsPage() {
                               </span>
                             </td>
                             <td className="px-4 py-3.5">
-                              {e.agentId && <AgentLink id={e.agentId} />}
+                              {event.agentId && <AgentLink id={event.agentId} />}
                             </td>
                             <td className="px-4 py-3.5">
                               <span className="text-[10px] font-mono text-zinc-400">
@@ -296,25 +258,20 @@ export default function SignalsPage() {
                               </span>
                             </td>
                             <td className="px-4 py-3.5 text-right">
-                              <span className="text-[10px] font-mono text-zinc-400">{timeAgo(e.createdAt)}</span>
+                              <span className="text-[10px] font-mono text-zinc-400">{relativeTime(event.createdAt)}</span>
                             </td>
                           </tr>
                         )
                       }
 
                       // Payment event
-                      let payer = "Unknown"
-                      let signalCount = 0
-                      let amount = 0
-                      try {
-                        const parsed = JSON.parse(e.data || "{}")
-                        payer = parsed.payer ? `${parsed.payer.slice(0, 6)}...${parsed.payer.slice(-4)}` : "Unknown"
-                        signalCount = parsed.signalCount || 0
-                        amount = parsed.amount || 0
-                      } catch { /* ignore */ }
+                      const parsed = safeParseJSON(event.data)
+                      const payer = typeof parsed.payer === "string" ? `${parsed.payer.slice(0, 6)}...${parsed.payer.slice(-4)}` : "Unknown"
+                      const signalCount = Number(parsed.signalCount || 0)
+                      const amount = Number(parsed.amount || 0)
 
                       return (
-                        <tr key={`evt-${e.id}`} className="border-b border-white/[0.02] group row-hover transition-colors bg-violet-500/[0.02]">
+                        <tr key={`evt-${event.id}`} className="border-b border-white/[0.02] group row-hover transition-colors bg-violet-500/[0.02]">
                           <td className="px-5 py-3.5">
                             <span className="inline-flex items-center gap-1.5 text-xs font-mono">
                               <span className="w-1.5 h-1.5 rounded-full bg-pink-400" />
@@ -324,11 +281,11 @@ export default function SignalsPage() {
                           <td className="px-4 py-3.5">
                             <span className="text-xs font-mono text-zinc-300">{payer}</span>
                             <span className="text-[10px] text-zinc-400 mx-1.5">read from</span>
-                            {e.agentId && <AgentLink id={e.agentId} />}
+                            {event.agentId && <AgentLink id={event.agentId} />}
                           </td>
                           <td className="px-4 py-3.5">
                             <span className="text-[10px] font-mono text-zinc-400">
-                              {signalCount} signal{signalCount !== 1 ? "s" : ""} for {Number(amount).toFixed(2)} USDT
+                              {signalCount} signal{signalCount !== 1 ? "s" : ""} for {amount.toFixed(2)} USDT
                             </span>
                           </td>
                           <td className="px-4 py-3.5 text-right">
@@ -337,7 +294,7 @@ export default function SignalsPage() {
                             </span>
                           </td>
                           <td className="px-4 py-3.5 text-right">
-                            <span className="text-[10px] font-mono text-zinc-400">{timeAgo(e.createdAt)}</span>
+                            <span className="text-[10px] font-mono text-zinc-400">{relativeTime(event.createdAt)}</span>
                           </td>
                         </tr>
                       )
@@ -347,7 +304,6 @@ export default function SignalsPage() {
               </div>
             </div>
 
-            {/* Pagination */}
             {totalPages > 1 && (
               <div className="flex items-center justify-between pt-2">
                 <span className="text-[10px] font-mono text-zinc-400">
@@ -388,7 +344,6 @@ export default function SignalsPage() {
         )}
       </div>
 
-      {/* Agent Drawer */}
       {drawerId && (
         <AgentDrawer
           agentId={drawerId}
@@ -397,7 +352,6 @@ export default function SignalsPage() {
         />
       )}
 
-      {/* Footer */}
       <div className="border-t border-white/[0.03] pt-6 pb-12 text-center">
         <p className="text-[10px] font-mono text-white/60">
           Built by Ethy AI — X Layer Hackathon 2026

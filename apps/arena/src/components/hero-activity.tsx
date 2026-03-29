@@ -1,15 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useRef } from "react"
-
-interface ActivityItem {
-  id: number
-  type: string
-  agentId: string | null
-  data: string | null
-  txHash: string | null
-  createdAt: string
-}
+import { relativeTime, shortId, safeParseJSON, type ActivityItem } from "@/lib/format"
 
 const TYPE_CONFIG: Record<string, { label: string; icon: string }> = {
   signal_published: { label: "Signal", icon: "\u2197" },
@@ -20,50 +12,25 @@ const TYPE_CONFIG: Record<string, { label: string; icon: string }> = {
 
 const KNOWN_TYPES = new Set(Object.keys(TYPE_CONFIG))
 
-function shortId(id: string): string {
-  if (id.startsWith("0x") && id.length > 16) return `${id.slice(0, 6)}...${id.slice(-4)}`
-  return id
-}
-
-// ─── Helpers ───
-
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const seconds = Math.floor(diff / 1000)
-  if (seconds < 5) return "just now"
-  if (seconds < 60) return `${seconds}s ago`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
-
-function parseData(data: string | null): Record<string, unknown> {
-  if (!data) return {}
-  try { return JSON.parse(data) } catch { return {} }
-}
-
 function formatDetail(item: ActivityItem): string {
-  const data = parseData(item.data)
+  const parsed = safeParseJSON(item.data)
   switch (item.type) {
     case "signal_published":
-      return `New signal on ${data.token || "?"}`
-    case "payment":
-      const payer = typeof data.payer === "string" ? shortId(data.payer) : "agent"
-      return `${payer} paid ${Number(data.amount || 0).toFixed(2)} USDT for ${data.signalCount || 1} signal${Number(data.signalCount || 1) > 1 ? "s" : ""}`
+      return `New signal on ${parsed.token || "?"}`
+    case "payment": {
+      const payer = typeof parsed.payer === "string" ? shortId(parsed.payer) : "agent"
+      return `${payer} paid ${Number(parsed.amount || 0).toFixed(2)} USDT for ${parsed.signalCount || 1} signal${Number(parsed.signalCount || 1) > 1 ? "s" : ""}`
+    }
     case "agent_registered":
-      return `${data.name || item.agentId || "agent"} registered`
+      return `${parsed.name || item.agentId || "agent"} registered`
     case "signal_resolved": {
-      const pnl = Number(data.pnl || 0)
-      return `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}% ${data.status === "tp_hit" ? "TP hit" : "SL hit"}`
+      const pnl = Number(parsed.pnl || 0)
+      return `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}% ${parsed.status === "tp_hit" ? "TP hit" : "SL hit"}`
     }
     default:
       return ""
   }
 }
-
-// ─── Component ───
 
 const ROW_H = 64
 const MAX_VISIBLE = 6
@@ -81,14 +48,13 @@ export function HeroActivity() {
     try {
       const res = await fetch("/api/activity?limit=10")
       if (!res.ok) return
-      const data = await res.json()
-      const fetched: ActivityItem[] = (data.activity || [])
+      const json = await res.json()
+      const fetched: ActivityItem[] = (json.activity || [])
         .filter((item: ActivityItem) => KNOWN_TYPES.has(item.type))
       const visible = fetched.slice(0, MAX_VISIBLE)
-      if (data.agentNames) setAgentNames(data.agentNames)
+      if (json.agentNames) setAgentNames(json.agentNames)
 
       if (initialLoadRef.current && visible.length > 1) {
-        // First load: show all except the top item, then prepend it after a delay
         initialLoadRef.current = false
         const topItem = visible[0]
         setItems(visible.slice(1))
@@ -103,7 +69,6 @@ export function HeroActivity() {
         setItems(visible)
         if (!ready) setTimeout(() => setReady(true), 50)
 
-        // Highlight when top item changes (polling)
         const topId = visible[0]?.id ?? null
         if (topId && topId !== lastTopIdRef.current) {
           setHighlightId(topId)
@@ -111,7 +76,7 @@ export function HeroActivity() {
         }
         lastTopIdRef.current = topId
       }
-    } catch { /* ignore */ }
+    } catch { /* retry on next poll */ }
   }, [ready])
 
   useEffect(() => { fetchActivity() }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -132,8 +97,6 @@ export function HeroActivity() {
         const config = TYPE_CONFIG[item.type]!
         const detail = formatDetail(item)
         const isHighlighted = item.id === highlightId
-
-        // Fade out further down
         const opacity = Math.max(0.08, 1 - i * 0.18)
 
         return (
@@ -163,24 +126,20 @@ export function HeroActivity() {
                 transition: "background 1.2s ease, border-color 1.2s ease, box-shadow 1.2s ease",
               }}
             >
-              {/* Icon */}
               <span className="shrink-0 text-[11px] font-mono text-zinc-400 w-5 text-center">
                 {config.icon}
               </span>
 
-              {/* Type label */}
               <span className="shrink-0 text-[10px] font-mono font-medium text-zinc-400 bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded">
                 {config.label}
               </span>
 
-              {/* Content */}
               <div className="flex-1 min-w-0">
                 <p className="text-[11px] text-zinc-300 truncate">
                   {detail}
                 </p>
               </div>
 
-              {/* Agent + Time */}
               <div className="shrink-0 flex flex-col items-end gap-0.5">
                 {item.agentId && (
                   <span className="text-[10px] text-white/60 font-mono">

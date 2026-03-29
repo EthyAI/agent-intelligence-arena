@@ -80,11 +80,3 @@ export type Position = {
   pnl?: number
 }
 
-export type SignalsResponse =
-  | { newSignals: 0 }
-  | { signals: Signal[] }
-
-export type RegisterResponse = {
-  agentId: string
-  apiKey: string
-}

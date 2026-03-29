@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
+import { relativeTime, safeParseJSON } from "@/lib/format"
 
 type AgentDetail = {
   id: string
@@ -39,7 +40,6 @@ export function AgentDrawer({
   const [events, setEvents] = useState<FeedEvent[]>([])
   const [loading, setLoading] = useState(true)
 
-  // Rank among all agents (sorted by score desc)
   const rank = allAgentIds.indexOf(agentId) + 1
 
   useEffect(() => {
@@ -53,14 +53,12 @@ export function AgentDrawer({
       .catch(() => setLoading(false))
   }, [agentId])
 
-  // Fetch recent activity for this agent
   useEffect(() => {
     fetch("/api/signals-feed")
       .then((r) => r.json())
       .then((json) => {
         const items: FeedEvent[] = []
 
-        // Signals by this agent
         for (const s of json.signals || []) {
           if (s.agentId !== agentId) continue
           items.push({
@@ -73,7 +71,6 @@ export function AgentDrawer({
           })
         }
 
-        // Events involving this agent
         for (const e of json.events || []) {
           if (e.agentId !== agentId) continue
           if (e.type === "agent_registered") {
@@ -86,13 +83,9 @@ export function AgentDrawer({
               time: e.createdAt,
             })
           } else if (e.type === "payment") {
-            let payer = "?"
-            let count = 0
-            try {
-              const p = JSON.parse(e.data || "{}")
-              payer = p.payer ? `${p.payer.slice(0, 6)}...${p.payer.slice(-4)}` : "?"
-              count = p.signalCount || 0
-            } catch { /* ignore */ }
+            const parsed = safeParseJSON(e.data)
+            const payer = typeof parsed.payer === "string" ? `${parsed.payer.slice(0, 6)}...${parsed.payer.slice(-4)}` : "?"
+            const count = Number(parsed.signalCount || 0)
             items.push({
               kind: "payment",
               label: "x402 PAID",
@@ -110,29 +103,17 @@ export function AgentDrawer({
       .catch(() => {})
   }, [agentId])
 
-  const timeAgo = (iso: string) => {
-    const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-    if (s < 0) return "just now"
-    if (s < 60) return `${s}s ago`
-    if (s < 3600) return `${Math.floor(s / 60)}m ago`
-    if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-    return `${Math.floor(s / 86400)}d ago`
-  }
-
   const perfColor = (wr: number) =>
     wr >= 60 ? "text-green-400" : wr >= 40 ? "text-yellow-400" : "text-zinc-400"
 
   return (
     <>
-      {/* Backdrop */}
       <div
         className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 transition-opacity"
         onClick={onClose}
       />
 
-      {/* Drawer */}
       <div className="fixed top-0 right-0 h-full w-full max-w-md bg-[#0a0a0a] border-l border-white/[0.06] z-50 overflow-y-auto animate-slide-in-right">
-        {/* Header */}
         <div className="sticky top-0 bg-[#0a0a0a]/95 backdrop-blur-sm border-b border-white/[0.04] px-6 py-4 flex items-center justify-between z-10">
           <span className="text-xs font-mono text-zinc-400 uppercase tracking-wider">Agent Profile</span>
           <button
@@ -151,7 +132,6 @@ export function AgentDrawer({
           </div>
         ) : (
           <div className="p-6 space-y-6">
-            {/* Name + rank */}
             <div>
               <div className="flex items-center gap-3">
                 <h2 className="text-xl font-bold text-white">{agent.name}</h2>
@@ -172,7 +152,6 @@ export function AgentDrawer({
               </div>
             </div>
 
-            {/* Stats grid */}
             <div className="grid grid-cols-2 gap-3">
               <div className="glass rounded-lg p-3.5">
                 <p className="text-[10px] font-mono text-white/50 uppercase tracking-widest mb-1">Win Rate</p>
@@ -203,7 +182,6 @@ export function AgentDrawer({
               </div>
             </div>
 
-            {/* Recent events */}
             <div>
               <div className="flex items-center gap-2 mb-3">
                 <h3 className="text-xs font-mono text-zinc-300 uppercase tracking-wider">Recent Activity</h3>
@@ -234,7 +212,7 @@ export function AgentDrawer({
                           {ev.status}
                         </span>
                         <span className="text-[10px] font-mono text-zinc-400 w-14 text-right">
-                          {timeAgo(ev.time)}
+                          {relativeTime(ev.time)}
                         </span>
                       </div>
                     </div>
@@ -243,7 +221,6 @@ export function AgentDrawer({
               )}
             </div>
 
-            {/* Link to full profile */}
             <Link
               href={`/agents/${agent.id}`}
               className="block text-center text-xs font-mono text-violet-400 hover:text-violet-300 transition-colors py-2 border border-violet-500/10 rounded-lg hover:bg-violet-500/[0.04]"

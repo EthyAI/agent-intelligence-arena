@@ -1,15 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useRef } from "react"
-
-interface ActivityItem {
-  id: number
-  type: string
-  agentId: string | null
-  data: string | null
-  txHash: string | null
-  createdAt: string
-}
+import { relativeTime, shortId, safeParseJSON, type ActivityItem } from "@/lib/format"
 
 const TYPE_CONFIG: Record<string, { label: string; icon: string }> = {
   signal_published: { label: "Signal", icon: "\u2197" },
@@ -18,50 +10,23 @@ const TYPE_CONFIG: Record<string, { label: string; icon: string }> = {
   signal_resolved: { label: "Resolved", icon: "\u2713" },
 }
 
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const seconds = Math.floor(diff / 1000)
-  if (seconds < 5) return "now"
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
-  const days = Math.floor(hours / 24)
-  return `${days}d`
-}
-
-function shortId(id: string): string {
-  if (id.startsWith("0x") && id.length > 16) return `${id.slice(0, 6)}...${id.slice(-4)}`
-  return id
-}
-
-function parseData(data: string | null): Record<string, unknown> {
-  if (!data) return {}
-  try {
-    return JSON.parse(data)
-  } catch {
-    return {}
-  }
-}
-
 function ActivityRow({ item, index, isNew, agentNames }: { item: ActivityItem; index: number; isNew: boolean; agentNames: Record<string, string> }) {
   const config = TYPE_CONFIG[item.type] || {
     label: item.type,
     icon: "\u2022",
   }
-  const data = parseData(item.data)
+  const parsed = safeParseJSON(item.data)
 
   let detail = ""
   if (item.type === "signal_published") {
-    detail = `New signal on ${data.token || "?"}`
+    detail = `New signal on ${parsed.token || "?"}`
   } else if (item.type === "payment") {
-    const payer = typeof data.payer === "string" ? shortId(data.payer) : "agent"
-    detail = `${payer} paid ${Number(data.amount || 0).toFixed(2)} USDT for ${data.signalCount || 0} signals`
+    const payer = typeof parsed.payer === "string" ? shortId(parsed.payer) : "agent"
+    detail = `${payer} paid ${Number(parsed.amount || 0).toFixed(2)} USDT for ${parsed.signalCount || 0} signals`
   } else if (item.type === "agent_registered") {
-    detail = `${data.name || item.agentId} joined`
+    detail = `${parsed.name || item.agentId} joined`
   } else if (item.type === "signal_resolved") {
-    detail = `${data.status || ""} ${data.pnl != null ? (Number(data.pnl) >= 0 ? "+" : "") + Number(data.pnl).toFixed(2) + "%" : ""}`
+    detail = `${parsed.status || ""} ${parsed.pnl != null ? (Number(parsed.pnl) >= 0 ? "+" : "") + Number(parsed.pnl).toFixed(2) + "%" : ""}`
   }
 
   return (
@@ -69,7 +34,6 @@ function ActivityRow({ item, index, isNew, agentNames }: { item: ActivityItem; i
       className={`animate-slide-in flex items-start gap-3 py-2.5 border-b border-white/[0.02] last:border-0 group ${isNew ? "feed-item-new" : ""}`}
       style={{ animationDelay: `${index * 0.03}s` }}
     >
-      {/* Icon */}
       <span className="font-mono text-[11px] text-white/60 w-5 text-center shrink-0 mt-0.5">
         {config.icon}
       </span>
@@ -107,12 +71,11 @@ export function ActivityFeed() {
     try {
       const res = await fetch("/api/activity?limit=30")
       if (res.ok) {
-        const data = await res.json()
+        const json = await res.json()
         const knownTypes = new Set(Object.keys(TYPE_CONFIG))
-        const fetched: ActivityItem[] = (data.activity || [])
+        const fetched: ActivityItem[] = (json.activity || [])
           .filter((item: ActivityItem) => knownTypes.has(item.type))
 
-        // Track new items for flash animation
         const currentIds = new Set(fetched.map((i) => i.id))
         if (prevIdsRef.current.size > 0) {
           const fresh = new Set<number>()
@@ -127,10 +90,10 @@ export function ActivityFeed() {
         prevIdsRef.current = currentIds
 
         setItems(fetched)
-        if (data.agentNames) setAgentNames(data.agentNames)
+        if (json.agentNames) setAgentNames(json.agentNames)
       }
     } catch {
-      /* silent */
+      /* network error — retry on next poll */
     } finally {
       setLoading(false)
     }
@@ -144,7 +107,6 @@ export function ActivityFeed() {
 
   return (
     <div className="glass rounded-xl overflow-hidden">
-      {/* Header */}
       <div className="px-4 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <h3 className="text-xs font-mono text-zinc-300 uppercase tracking-wider font-medium">
@@ -158,7 +120,6 @@ export function ActivityFeed() {
         </div>
       </div>
 
-      {/* Content */}
       <div className="px-4 py-2">
         {loading ? (
           <div className="space-y-2.5 py-3">
@@ -194,7 +155,6 @@ export function ActivityFeed() {
         )}
       </div>
 
-      {/* Footer */}
       {!loading && items.length > 0 && (
         <div className="px-4 py-2.5 border-t border-white/[0.03] flex items-center justify-between">
           <span className="text-[10px] font-mono text-white/60">

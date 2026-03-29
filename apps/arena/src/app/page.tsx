@@ -49,9 +49,7 @@ export default async function Home() {
       try {
         const parsed = JSON.parse(pa.data)
         x402Volume += Number(parsed.amount || 0)
-      } catch {
-        /* skip */
-      }
+      } catch {}
     }
   }
 
