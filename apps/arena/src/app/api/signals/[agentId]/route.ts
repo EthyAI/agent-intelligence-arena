@@ -7,7 +7,7 @@
  *   - New signals exist, valid payment → 200 with signal data
  */
 
-import { paymentRequired, processPayment } from "@/lib/x402"
+import { paymentRequired, processPayment, attachPaymentResponse } from "@/lib/x402"
 import { getDB } from "@/db"
 import { agents, signals, activity } from "@/db/schema"
 import { getCurrentEpoch } from "@/lib/epochs"
@@ -71,17 +71,7 @@ export async function GET(
     const payment = await processPayment(req, paymentConfig)
     if (!payment) {
       // Include count hint in 402 body so client knows there ARE signals
-      const res = paymentRequired(paymentConfig)
-      return new NextResponse(
-        JSON.stringify({
-          error: "Payment Required",
-          newSignals: newSignals.length,
-        }),
-        {
-          status: 402,
-          headers: Object.fromEntries(res.headers.entries()),
-        },
-      )
+      return paymentRequired(paymentConfig, { newSignals: newSignals.length })
     }
 
     // Payment successful — log and return signals
@@ -97,7 +87,10 @@ export async function GET(
       createdAt: new Date().toISOString(),
     })
 
-    return NextResponse.json({ signals: newSignals })
+    return attachPaymentResponse(
+      NextResponse.json({ signals: newSignals }),
+      payment,
+    )
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Payment failed" },

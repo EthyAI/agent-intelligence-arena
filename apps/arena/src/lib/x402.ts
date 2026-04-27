@@ -1,83 +1,59 @@
 /**
- * x402 payment middleware for OKX facilitator on X Layer.
+ * x402 payment middleware (powered by @okxweb3/x402-* SDK).
  *
- * Implements the x402 HTTP payment protocol (https://x402.org):
- *   1. Server responds with 402 + `PAYMENT-REQUIRED` header (base64 JSON).
- *   2. Client signs a transferWithAuthorization EIP-3009 permit.
- *   3. Client retries the request with `X-PAYMENT` header (base64 JSON).
- *   4. Server verifies the signature via OKX, then settles onchain.
+ * Wraps the OKX facilitator client and the SDK's header codecs in two helpers
+ * that match the call sites already used by our API routes:
  *
- * Adapted for OKX's v1 x402 schema on X Layer (chain index 196).
- * Uses USDT or USDG as payment tokens — both EIP-3009 compatible.
+ *   const payment = await processPayment(req, config)
+ *   if (!payment) return paymentRequired(config)
+ *
+ * The SDK speaks x402 v2 with CAIP-2 networks. EIP-3009 transferWithAuthorization
+ * is used for USDT/USDG on X Layer (chain `eip155:196`).
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { okxFetch } from "./okx-client"
+import { OKXFacilitatorClient } from "@okxweb3/x402-core/facilitator"
+import {
+  encodePaymentRequiredHeader,
+  encodePaymentResponseHeader,
+  decodePaymentSignatureHeader,
+} from "@okxweb3/x402-core/http"
+import type {
+  PaymentRequired,
+  PaymentRequirements,
+  Network,
+} from "@okxweb3/x402-core/types"
 
-/** X Layer chain index used in OKX APIs */
-const CHAIN_INDEX = "196"
+const NETWORK: Network = "eip155:196"
+const X402_VERSION = 2
 
 // ---------------------------------------------------------------------------
-// Types
+// Facilitator client (singleton)
 // ---------------------------------------------------------------------------
 
-/** What the server requires for payment (sent in the 402 response). */
-type PaymentRequirements = {
-  scheme: "exact"
-  chainIndex: string
-  maxAmountRequired: string
-  payTo: string
-  resource?: string
-  description?: string
-  mimeType?: string
-  asset?: string
-  maxTimeoutSeconds?: number
-  extra?: Record<string, unknown>
-}
+let _facilitator: OKXFacilitatorClient | null = null
 
-/** What the client sends back as proof of signed payment. */
-type PaymentPayload = {
-  x402Version: number
-  scheme: string
-  chainIndex: string
-  payload: {
-    signature: string
-    authorization: {
-      from: string
-      to: string
-      value: string
-      validAfter: string
-      validBefore: string
-      nonce: string
-    }
+function getFacilitator(): OKXFacilitatorClient {
+  if (_facilitator) return _facilitator
+
+  const apiKey = process.env.OKX_API_KEY
+  const secretKey = process.env.OKX_SECRET_KEY
+  const passphrase = process.env.OKX_PASSPHRASE
+  if (!apiKey || !secretKey || !passphrase) {
+    throw new Error("OKX_API_KEY / OKX_SECRET_KEY / OKX_PASSPHRASE must be set")
   }
-}
 
-/** OKX verify endpoint response shape. */
-type VerifyResponse = {
-  code: string
-  data: Array<{
-    isValid: boolean
-    payer: string
-    invalidReason: string | null
-  }>
-}
-
-/** OKX settle endpoint response shape. */
-type SettleResponse = {
-  code: string
-  data: Array<{
-    success: boolean
-    payer: string
-    txHash: string
-    chainIndex: string
-    chainName: string
-    errorMsg: string | null
-  }>
+  _facilitator = new OKXFacilitatorClient({
+    apiKey,
+    secretKey,
+    passphrase,
+    syncSettle: true,
+  })
+  return _facilitator
 }
 
 // ---------------------------------------------------------------------------
-// Payment Configuration
+// Public API
 // ---------------------------------------------------------------------------
 
 export type PaymentConfig = {
@@ -91,192 +67,112 @@ export type PaymentConfig = {
   description?: string
 }
 
-// ---------------------------------------------------------------------------
-// 402 Response
-// ---------------------------------------------------------------------------
+export type PaymentResult = {
+  payer: string
+  txHash: string
+}
+
+/** Build a `PaymentRequirements` object from our internal config. */
+function buildRequirements(config: PaymentConfig): PaymentRequirements {
+  return {
+    scheme: "exact",
+    network: NETWORK,
+    asset: config.asset,
+    amount: config.amount,
+    payTo: config.payTo,
+    maxTimeoutSeconds: 300,
+    // EIP-712 domain hints + transfer method for USDT/USDG on X Layer.
+    extra: {
+      name: "USD₮0",
+      version: "1",
+      assetTransferMethod: "eip3009",
+    },
+  }
+}
 
 /**
- * Build a 402 Payment Required response.
- *
- * The `PAYMENT-REQUIRED` header contains base64-encoded JSON describing
- * how much to pay, to whom, and on which chain. Clients decode this
- * to construct their EIP-3009 signature.
+ * Build a 402 Payment Required response with a `PAYMENT-REQUIRED` header.
+ * The body still includes a JSON `{ error }` (legacy) plus any extra fields
+ * provided in `extraBody` (used by the signals route to leak the count hint).
  */
-export function paymentRequired(config: PaymentConfig): NextResponse {
-  const requirements: PaymentRequirements = {
-    scheme: "exact",
-    chainIndex: CHAIN_INDEX,
-    maxAmountRequired: config.amount,
-    payTo: config.payTo,
-    asset: config.asset,
-    description: config.description ?? "Ethy Arena payment",
-    mimeType: "application/json",
-    maxTimeoutSeconds: 300,
-    extra: { name: "USD₮0", version: "1" },
-  }
-
-  const header = {
-    x402Version: 1,
+export function paymentRequired(
+  config: PaymentConfig,
+  extraBody?: Record<string, unknown>,
+): NextResponse {
+  const requirements = buildRequirements(config)
+  const paymentRequired: PaymentRequired = {
+    x402Version: X402_VERSION,
+    error: "Payment Required",
+    resource: { description: config.description ?? "Ethy Arena payment", url: "" },
     accepts: [requirements],
   }
 
-  return new NextResponse(JSON.stringify({ error: "Payment Required" }), {
-    status: 402,
-    headers: {
-      "Content-Type": "application/json",
-      "PAYMENT-REQUIRED": Buffer.from(JSON.stringify(header)).toString(
-        "base64",
-      ),
+  return new NextResponse(
+    JSON.stringify({ error: "Payment Required", ...(extraBody ?? {}) }),
+    {
+      status: 402,
+      headers: {
+        "Content-Type": "application/json",
+        "PAYMENT-REQUIRED": encodePaymentRequiredHeader(paymentRequired),
+      },
     },
-  })
-}
-
-// ---------------------------------------------------------------------------
-// Verify & Settle
-// ---------------------------------------------------------------------------
-
-/**
- * Verify a payment signature via OKX.
- * Checks the EIP-3009 signature is valid and the payer has sufficient balance.
- * Does NOT execute onchain settlement.
- */
-export async function verifyPayment(
-  paymentPayload: PaymentPayload,
-  requirements: PaymentRequirements,
-): Promise<{ valid: boolean; payer: string; reason?: string }> {
-  const body = {
-    x402Version: 1,
-    chainIndex: CHAIN_INDEX,
-    paymentPayload,
-    paymentRequirements: requirements,
-  }
-
-  const res = await okxFetch<VerifyResponse>(
-    "POST",
-    "/api/v6/x402/verify",
-    body,
   )
-
-  if (res.code !== "0" || !res.data?.length) {
-    return { valid: false, payer: "", reason: `OKX verify failed: code ${res.code}` }
-  }
-
-  const result = res.data[0]
-  return {
-    valid: result.isValid,
-    payer: result.payer,
-    reason: result.invalidReason ?? undefined,
-  }
 }
 
 /**
- * Settle a verified payment onchain via OKX.
- * Executes the EIP-3009 `transferWithAuthorization` on X Layer.
- * Returns the transaction hash on success.
- */
-export async function settlePayment(
-  paymentPayload: PaymentPayload,
-  requirements: PaymentRequirements,
-): Promise<{
-  success: boolean
-  txHash: string
-  payer: string
-  error?: string
-}> {
-  const body = {
-    x402Version: 1,
-    chainIndex: CHAIN_INDEX,
-    paymentPayload,
-    paymentRequirements: requirements,
-  }
-
-  const res = await okxFetch<SettleResponse>(
-    "POST",
-    "/api/v6/x402/settle",
-    body,
-  )
-
-  if (res.code !== "0" || !res.data?.length) {
-    return {
-      success: false,
-      txHash: "",
-      payer: "",
-      error: `OKX settle failed: code ${res.code}`,
-    }
-  }
-
-  const result = res.data[0]
-  return {
-    success: result.success,
-    txHash: result.txHash,
-    payer: result.payer,
-    error: result.errorMsg ?? undefined,
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Middleware Helper
-// ---------------------------------------------------------------------------
-
-export type PaymentResult = {
-  /** Wallet address of the payer */
-  payer: string
-  /** Onchain transaction hash of the settlement */
-  txHash: string
-}
-
-/**
- * End-to-end x402 payment processing for a route handler.
+ * End-to-end x402 payment processing: decode header, verify, settle.
  *
- * Usage in an API route:
- * ```ts
- * const payment = await processPayment(req, config)
- * if (!payment) return paymentRequired(config) // no X-PAYMENT header
- * // payment.payer, payment.txHash are available
- * ```
- *
- * @returns PaymentResult on success, null if no payment header present.
- * @throws  On invalid signature or failed settlement.
+ * @returns PaymentResult on success, null if no PAYMENT-SIGNATURE header is present.
+ * @throws  On invalid signature, balance, or failed settlement.
  */
 export async function processPayment(
   req: NextRequest,
   config: PaymentConfig,
 ): Promise<PaymentResult | null> {
-  const paymentHeader = req.headers.get("X-PAYMENT")
-  if (!paymentHeader) return null
+  const header =
+    req.headers.get("PAYMENT-SIGNATURE") ??
+    req.headers.get("payment-signature")
+  if (!header) return null
 
-  // Decode the base64 payment payload from the client
-  const decoded = JSON.parse(
-    Buffer.from(paymentHeader, "base64").toString(),
-  ) as PaymentPayload
+  const paymentPayload = decodePaymentSignatureHeader(header)
+  const requirements = buildRequirements(config)
 
-  // Build requirements matching what we advertised in the 402
-  const requirements: PaymentRequirements = {
-    scheme: "exact",
-    chainIndex: CHAIN_INDEX,
-    maxAmountRequired: config.amount,
-    payTo: config.payTo,
-    asset: config.asset,
-    description: config.description ?? "Ethy Arena payment",
-    mimeType: "application/json",
-    maxTimeoutSeconds: 300,
-    extra: { name: "USD₮0", version: "1" },
+  const facilitator = getFacilitator()
+
+  const verification = await facilitator.verify(paymentPayload, requirements)
+  if (!verification.isValid) {
+    throw new Error(
+      `Payment verification failed: ${verification.invalidReason ?? "unknown"}`,
+    )
   }
 
-  // Step 1: Verify signature + balance
-  const verification = await verifyPayment(decoded, requirements)
-  if (!verification.valid) {
-    throw new Error(`Payment verification failed: ${verification.reason}`)
-  }
-
-  // Step 2: Settle onchain
-  const settlement = await settlePayment(decoded, requirements)
+  const settlement = await facilitator.settle(paymentPayload, requirements)
   if (!settlement.success) {
-    throw new Error(`Payment settlement failed: ${settlement.error}`)
+    throw new Error(
+      `Payment settlement failed: ${settlement.errorReason ?? "unknown"}`,
+    )
   }
 
   return {
-    payer: settlement.payer,
-    txHash: settlement.txHash,
+    payer: settlement.payer ?? verification.payer ?? "",
+    txHash: settlement.transaction,
   }
+}
+
+/** Attach the settlement tx hash as a `PAYMENT-RESPONSE` header on a success response. */
+export function attachPaymentResponse(
+  res: NextResponse,
+  payment: PaymentResult,
+): NextResponse {
+  res.headers.set(
+    "PAYMENT-RESPONSE",
+    encodePaymentResponseHeader({
+      success: true,
+      status: "success",
+      transaction: payment.txHash,
+      network: NETWORK,
+      payer: payment.payer,
+    }),
+  )
+  return res
 }

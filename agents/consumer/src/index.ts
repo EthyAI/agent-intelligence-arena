@@ -11,7 +11,12 @@
 import { ethers } from "ethers"
 import { XLAYER_RPC, USDT_ADDRESS } from "@ethy-arena/shared"
 import type { Signal, Position, PositionStatus } from "@ethy-arena/shared"
-import { X402Client } from "./x402-client.js"
+import { createWalletClient, http, publicActions } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
+import { xLayer } from "viem/chains"
+import { wrapFetchWithPayment, x402Client } from "@okxweb3/x402-fetch"
+import { ExactEvmScheme } from "@okxweb3/x402-evm"
+import { decodePaymentResponseHeader } from "@okxweb3/x402-core/http"
 import { executeSwap, executeSellSwap, getCurrentPrice } from "./trader.js"
 import { readFileSync, writeFileSync, existsSync } from "fs"
 import { join, dirname } from "path"
@@ -118,7 +123,9 @@ async function checkPositions(wallet: ethers.Wallet) {
 
 // --- Signal fetching and evaluation ---
 
-async function checkSignals(x402: X402Client, wallet: ethers.Wallet) {
+type PaidFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+async function checkSignals(paidFetch: PaidFetch, wallet: ethers.Wallet) {
   console.log(`[${ts()}] Checking for new signals from "${AGENT_ID}"...`)
 
   const url = lastSeenId
@@ -126,8 +133,15 @@ async function checkSignals(x402: X402Client, wallet: ethers.Wallet) {
     : `${ARENA_URL}/api/signals/${AGENT_ID}`
 
   try {
-    const { data, paymentTxHash } = await x402.fetchWithPayment(url)
-    const body = data as { newSignals?: number; signals?: Signal[] }
+    const res = await paidFetch(url)
+    if (!res.ok) {
+      throw new Error(`Arena ${res.status}: ${await res.text()}`)
+    }
+    const settleHeader = res.headers.get("PAYMENT-RESPONSE")
+    const paymentTxHash = settleHeader
+      ? decodePaymentResponseHeader(settleHeader).transaction
+      : undefined
+    const body = (await res.json()) as { newSignals?: number; signals?: Signal[] }
 
     if (body.newSignals === 0 || !body.signals?.length) {
       console.log("  No new signals")
@@ -210,12 +224,12 @@ async function checkSignals(x402: X402Client, wallet: ethers.Wallet) {
 
 // --- Main loop ---
 
-async function tick(x402: X402Client, wallet: ethers.Wallet) {
+async function tick(paidFetch: PaidFetch, wallet: ethers.Wallet) {
   // 1. Check open positions for TP/SL first
   await checkPositions(wallet)
 
   // 2. Check for new signals
-  await checkSignals(x402, wallet)
+  await checkSignals(paidFetch, wallet)
 
   // 3. Summary
   const open = positions.filter((p) => p.status === "open").length
@@ -240,12 +254,50 @@ async function main() {
 
   const provider = new ethers.JsonRpcProvider(XLAYER_RPC)
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider)
-  const x402 = new X402Client(PRIVATE_KEY)
+
+  // viem signer for x402 EIP-3009 authorization (separate from ethers wallet,
+  // which still drives DEX swaps). Same private key, two different stacks.
+  const account = privateKeyToAccount(
+    (PRIVATE_KEY.startsWith("0x") ? PRIVATE_KEY : `0x${PRIVATE_KEY}`) as `0x${string}`,
+  )
+  const viemWallet = createWalletClient({
+    account,
+    chain: xLayer,
+    transport: http(XLAYER_RPC),
+  }).extend(publicActions)
+
+  const signer = {
+    address: account.address,
+    signTypedData: (msg: {
+      domain: Record<string, unknown>
+      types: Record<string, unknown>
+      primaryType: string
+      message: Record<string, unknown>
+    }) =>
+      viemWallet.signTypedData({
+        account,
+        domain: msg.domain as Parameters<typeof viemWallet.signTypedData>[0]["domain"],
+        types: msg.types as Parameters<typeof viemWallet.signTypedData>[0]["types"],
+        primaryType: msg.primaryType,
+        message: msg.message,
+      }),
+  }
+
+  const client = x402Client.fromConfig({
+    schemes: [
+      {
+        network: "eip155:196",
+        client: new ExactEvmScheme(signer),
+        x402Version: 2,
+      },
+    ],
+  })
+  const paidFetch = wrapFetchWithPayment(globalThis.fetch, client)
 
   console.log(`  Wallet:     ${wallet.address}\n`)
 
-  await tick(x402, wallet)
-  setInterval(() => tick(x402, wallet), CHECK_INTERVAL)
+  await tick(paidFetch, wallet)
+  setInterval(() => tick(paidFetch, wallet), CHECK_INTERVAL)
 }
 
 main().catch(console.error)

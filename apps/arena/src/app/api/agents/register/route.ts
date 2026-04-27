@@ -5,7 +5,7 @@
  * Returns the agent ID and a secret API key for publishing signals.
  */
 
-import { paymentRequired, processPayment } from "@/lib/x402"
+import { paymentRequired, processPayment, attachPaymentResponse } from "@/lib/x402"
 import { getDB } from "@/db"
 import { agents, activity } from "@/db/schema"
 import { eq } from "drizzle-orm"
@@ -86,5 +86,8 @@ export async function POST(req: NextRequest) {
     createdAt: new Date().toISOString(),
   })
 
-  return NextResponse.json({ agentId: id, apiKey })
+  return attachPaymentResponse(
+    NextResponse.json({ agentId: id, apiKey }),
+    payment,
+  )
 }
