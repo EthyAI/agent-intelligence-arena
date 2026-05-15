@@ -1,7 +1,20 @@
 import { XLAYER_RPC } from "@ethy-arena/shared"
+import { decodeFunctionData, parseAbi } from "viem"
 
 const MAX_TX_AGE_MS = 10 * 60 * 1000 // 10 minutes
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+// ERC-4337 EntryPoint addresses (canonical, identical across chains).
+const EIP4337_ENTRYPOINT_V07 = "0x0000000071727de22e5e9d8baf0edac6f37da032"
+const EIP4337_ENTRYPOINT_V06 = "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789"
+
+const ENTRYPOINT_V07_ABI = parseAbi([
+  "function handleOps((address sender,uint256 nonce,bytes initCode,bytes callData,bytes32 accountGasLimits,uint256 preVerificationGas,bytes32 gasFees,bytes paymasterAndData,bytes signature)[] ops, address beneficiary)",
+])
+
+const ENTRYPOINT_V06_ABI = parseAbi([
+  "function handleOps((address sender,uint256 nonce,bytes initCode,bytes callData,uint256 callGasLimit,uint256 verificationGasLimit,uint256 preVerificationGas,uint256 maxFeePerGas,uint256 maxPriorityFeePerGas,bytes paymasterAndData,bytes signature)[] ops, address beneficiary)",
+])
 
 type VerifyResult =
   | { valid: true; tokenAmount: number | null }
@@ -15,6 +28,40 @@ async function rpcCall(method: string, params: unknown[]): Promise<unknown> {
   })
   const data = await res.json()
   return data.result
+}
+
+/**
+ * Resolve the *logical* sender of a TX, accounting for ERC-4337 bundled
+ * UserOperations. For traditional EOAs, returns [tx.from]. For 4337 bundler
+ * TXs (tx.to === EntryPoint), decodes handleOps and returns every ops[i].sender.
+ *
+ * EIP-7702 delegations need no special handling: tx.from is already the EOA.
+ */
+function extractEffectiveSenders(tx: Record<string, string>): string[] {
+  const txTo = tx.to?.toLowerCase()
+  const isV07 = txTo === EIP4337_ENTRYPOINT_V07
+  const isV06 = txTo === EIP4337_ENTRYPOINT_V06
+
+  if (!isV07 && !isV06) {
+    return [tx.from.toLowerCase()]
+  }
+
+  if (!tx.input || tx.input === "0x") {
+    return [tx.from.toLowerCase()]
+  }
+
+  try {
+    const abi = isV07 ? ENTRYPOINT_V07_ABI : ENTRYPOINT_V06_ABI
+    const decoded = decodeFunctionData({ abi, data: tx.input as `0x${string}` })
+    if (decoded.functionName === "handleOps") {
+      const ops = decoded.args[0] as readonly { sender: string }[]
+      return ops.map((op) => op.sender.toLowerCase())
+    }
+  } catch {
+    // Unrecognized calldata — fall through to bundler address
+  }
+
+  return [tx.from.toLowerCase()]
 }
 
 /**
@@ -40,8 +87,11 @@ export async function verifyTradeTx(
       return { valid: false, reason: "TX not found on X Layer" }
     }
 
-    // Check sender matches agent wallet
-    if (tx.from.toLowerCase() !== agentWallet.toLowerCase()) {
+    // Check sender matches agent wallet — supports EOA, ERC-4337 (OKX Agentic
+    // Wallet / Biconomy / Alchemy / Coinbase Smart Wallet / Safe-4337…) and
+    // EIP-7702 delegated EOAs.
+    const senders = extractEffectiveSenders(tx)
+    if (!senders.includes(agentWallet.toLowerCase())) {
       return { valid: false, reason: "TX sender does not match agent wallet" }
     }
 
