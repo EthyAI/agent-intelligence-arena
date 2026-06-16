@@ -4,7 +4,12 @@
  */
 
 import { ethers } from "ethers"
-import { USDT_ADDRESS } from "./constants.js"
+import { createWalletClient, http, publicActions } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
+import { xLayer } from "viem/chains"
+import { wrapFetchWithPayment, x402Client } from "@okxweb3/x402-fetch"
+import { ExactEvmScheme } from "@okxweb3/x402-evm"
+import { USDT_ADDRESS, XLAYER_RPC } from "./constants.js"
 import { swapExecute, onchainos } from "./onchainos.js"
 import { readFileSync, writeFileSync, existsSync } from "fs"
 
@@ -40,58 +45,6 @@ export function savePublisherState(stateFile: string, state: PublisherState) {
   console.log(`  State saved to ${stateFile}`)
 }
 
-export async function signX402Payment(
-  wallet: ethers.Wallet,
-  accept: { maxAmountRequired: string; asset: string; payTo: string; chainIndex: string },
-) {
-  const nonce = ethers.hexlify(ethers.randomBytes(32))
-  const validBefore = String(Math.floor(Date.now() / 1000) + 300)
-
-  const signature = await wallet.signTypedData(
-    {
-      name: "USD₮0",
-      version: "1",
-      chainId: Number(accept.chainIndex),
-      verifyingContract: accept.asset,
-    },
-    {
-      TransferWithAuthorization: [
-        { name: "from", type: "address" },
-        { name: "to", type: "address" },
-        { name: "value", type: "uint256" },
-        { name: "validAfter", type: "uint256" },
-        { name: "validBefore", type: "uint256" },
-        { name: "nonce", type: "bytes32" },
-      ],
-    },
-    {
-      from: wallet.address,
-      to: accept.payTo,
-      value: accept.maxAmountRequired,
-      validAfter: "0",
-      validBefore,
-      nonce,
-    },
-  )
-
-  return {
-    x402Version: 1,
-    scheme: "exact",
-    chainIndex: accept.chainIndex,
-    payload: {
-      signature,
-      authorization: {
-        from: wallet.address,
-        to: accept.payTo,
-        value: accept.maxAmountRequired,
-        validAfter: "0",
-        validBefore,
-        nonce,
-      },
-    },
-  }
-}
-
 export async function registerPublisher(config: {
   name: string
   description: string
@@ -109,44 +62,61 @@ export async function registerPublisher(config: {
     pricePerQuery: config.pricePerQuery,
   }
 
-  const res402 = await fetch(`${config.arenaUrl}/api/agents/register`, {
+  // x402 v2 payment flow via @okxweb3 SDK. The wrapped fetch handles the
+  // 402 → sign EIP-3009 authorization → retry with PAYMENT-SIGNATURE round-trip.
+  // Reuse the ethers wallet's key for a viem signer (same pattern as the consumer).
+  const pk = config.wallet.privateKey
+  const account = privateKeyToAccount(
+    (pk.startsWith("0x") ? pk : `0x${pk}`) as `0x${string}`,
+  )
+  const viemWallet = createWalletClient({
+    account,
+    chain: xLayer,
+    transport: http(XLAYER_RPC),
+  }).extend(publicActions)
+
+  const signer = {
+    address: account.address,
+    signTypedData: (msg: {
+      domain: Record<string, unknown>
+      types: Record<string, unknown>
+      primaryType: string
+      message: Record<string, unknown>
+    }) =>
+      viemWallet.signTypedData({
+        account,
+        domain: msg.domain as Parameters<typeof viemWallet.signTypedData>[0]["domain"],
+        types: msg.types as Parameters<typeof viemWallet.signTypedData>[0]["types"],
+        primaryType: msg.primaryType,
+        message: msg.message,
+      }),
+  }
+
+  const client = x402Client.fromConfig({
+    schemes: [
+      {
+        network: "eip155:196",
+        client: new ExactEvmScheme(signer),
+        x402Version: 2,
+      },
+    ],
+  })
+  const paidFetch = wrapFetchWithPayment(globalThis.fetch, client)
+
+  const res = await paidFetch(`${config.arenaUrl}/api/agents/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   })
 
-  if (res402.status === 409) {
+  if (res.status === 409) {
     console.log("  Agent already registered. Set PUBLISHER_API_KEY env var.")
     process.exit(1)
   }
 
-  if (res402.status !== 402) {
-    const err = await res402.text()
-    throw new Error(`Expected 402, got ${res402.status}: ${err}`)
-  }
-
-  const payReqHeader = res402.headers.get("PAYMENT-REQUIRED")
-  if (!payReqHeader) throw new Error("No PAYMENT-REQUIRED header in 402 response")
-  const payReq = JSON.parse(Buffer.from(payReqHeader, "base64").toString())
-  const accept = payReq.accepts[0]
-  console.log(`  Payment required: ${accept.maxAmountRequired}`)
-
-  console.log(`  Signing x402 payment...`)
-  const paymentPayload = await signX402Payment(config.wallet, accept)
-  const paymentHeader = Buffer.from(JSON.stringify(paymentPayload)).toString("base64")
-
-  const res = await fetch(`${config.arenaUrl}/api/agents/register`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-PAYMENT": paymentHeader,
-    },
-    body: JSON.stringify(body),
-  })
-
   if (!res.ok) {
-    const err = await res.json()
-    throw new Error(`Registration failed: ${JSON.stringify(err)}`)
+    const err = await res.text()
+    throw new Error(`Registration failed (${res.status}): ${err}`)
   }
 
   const registration = await res.json() as { agentId: string; apiKey: string }

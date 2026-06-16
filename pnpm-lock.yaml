@@ -165,12 +165,21 @@ importers:
 
   packages/shared:
     dependencies:
+      '@okxweb3/x402-evm':
+        specifier: ^0.1.0
+        version: 0.1.0(typescript@5.9.3)
+      '@okxweb3/x402-fetch':
+        specifier: ^0.1.0
+        version: 0.1.0(typescript@5.9.3)
       ethers:
         specifier: ^6.16.0
         version: 6.16.0
       trading-signals:
         specifier: ^7.4.3
         version: 7.4.3
+      viem:
+        specifier: ^2.48.4
+        version: 2.48.4(typescript@5.9.3)(zod@4.3.6)
 
 packages:
 
