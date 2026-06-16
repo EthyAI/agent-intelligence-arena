@@ -2,7 +2,7 @@ FROM ubuntu:24.04 AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates nodejs npm && rm -rf /var/lib/apt/lists/*
-RUN npm install -g corepack && corepack enable && corepack prepare pnpm@latest --activate
+RUN npm install -g corepack && corepack enable && corepack prepare pnpm@10.11.0 --activate
 
 # Install onchainos CLI (requires GLIBC 2.39 → Ubuntu 24.04)
 RUN curl -fsSL https://github.com/okx/onchainos-skills/releases/download/v2.2.1/onchainos-x86_64-unknown-linux-gnu \
